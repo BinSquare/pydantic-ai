@@ -245,8 +245,8 @@ class SmolSandboxBackend(WorkspaceBackend, SupportsCommands):
             raise TypeError('env keys and values must be strings')
         machine = await self.get_machine()
         combined_env = {**(self._env or {}), **(env or {})}
-        # The SDK does not close stdin for exec, which leaves `read` waiting. The
-        # shell also reports a missing executable as 127 instead of the guest's 255.
+        # Keep stdin at EOF on older SmolVM releases, where streamed exec could
+        # leave `read` waiting. The shell also maps a missing executable to 127.
         # `exec` preserves argv and replaces the shell with the requested process.
         argv = ['/bin/sh', '-c', 'exec "$@" </dev/null', 'sh', *argv]
         output = _CommandOutput()
