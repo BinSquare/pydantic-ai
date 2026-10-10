@@ -3,7 +3,7 @@
 Harness capabilities that touch files or run commands (`Coder`, `FileSystem`, `Shell`, `RepoContext`,
 `Macroscope`) act in the run's **workspace**, never on a path they pick themselves. Attach the
 workspace as its own capability: `LocalWorkspace` for this machine, or `ModalSandbox` / `E2BSandbox` /
-`SpritesSandbox` for an isolated cloud machine. Core workspace semantics (refs, `workspace=`
+`SpritesSandbox` for an isolated cloud machine, or `SmolSandbox` for a local or cloud VM. Core workspace semantics (refs, `workspace=`
 precedence, `ReadOnlyWorkspace`, continuing from message history) are in the
 `building-pydantic-ai-agents` skill's WORKSPACES.md reference; this file covers the harness side.
 
@@ -13,7 +13,7 @@ precedence, `ReadOnlyWorkspace`, continuing from message history) are in the
 | --- | --- |
 | General coding agent: investigate, edit, test, delegate | `Coder()` + a workspace |
 | Narrower agent: file tools and/or commands with policy (allowlists, patterns, read-only) | `FileSystem()` and/or `Shell()` + a workspace |
-| Untrusted model or repo, or no access to this machine | Swap `LocalWorkspace` for `ModalSandbox()` / `E2BSandbox()` / `SpritesSandbox()`; tool capabilities stay the same |
+| Untrusted model or repo, or no access to this machine | Swap `LocalWorkspace` for `ModalSandbox()` / `E2BSandbox()` / `SpritesSandbox()` / `SmolSandbox(target='cloud')`; tool capabilities stay the same |
 | Work on another machine you can `ssh` to | `SSHWorkspace('user@host', working_dir=...)`; wrap it in `BubblewrapSandbox(...)` to sandbox its commands on that host |
 | Only your own tools use `ctx.workspace` | A workspace capability alone |
 
@@ -211,16 +211,27 @@ Parameters: `denied_commands` (default `rm`, `rmdir`, `mkfs`, `dd`, `format`, `s
   `setsid` for process-group stops.
 - `persist_cwd` does not apply to `shell`. A read-only workspace gets no Shell tools.
 
+## Smol sandbox
+
+`SmolSandbox()` supplies an isolated local microVM as the run's workspace; set `target='cloud'` to
+use Smol Cloud with `SMOL_CLOUD_TOKEN`. Install `[smol]` on Linux x86_64/aarch64 or macOS arm64.
+Combine with `Shell` and `FileSystem`, or install `git` and `rg` in the VM for `Coder`.
+`SmolSandboxBackend(ref=...)` reattaches; `await SmolSandbox().destroy(ref)` deletes it.
+Local VMs persist until deletion; cloud VMs default to a one-hour `ttl_seconds` lifetime.
+Networking is disabled unless `network=True`. The backend uses shell fallback file operations
+and needs BusyBox/POSIX utilities in the image. New runs create one VM lazily; the ref survives a
+cancelled create after the SDK returns its identity.
+
 ## Sandbox workspaces
 
-| | `ModalSandbox` | `E2BSandbox` | `SpritesSandbox` |
-| --- | --- | --- | --- |
-| Extra | `[modal]` | `[e2b]` | `[sprites]` |
-| Credentials | `modal token new`, or `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` | `E2B_API_KEY` | `SPRITE_TOKEN` |
-| Lifetime | `sandbox_timeout=86_400` (10 to 86,400), optional `idle_timeout`; then terminated | `sandbox_timeout=3_600` (Pro: up to 86,400); then **paused**, resumed on attach | Unlimited: sleeps when idle, persists until deleted |
-| Default cwd / user | `/root`, `root` | `/home/user`, `user` | `/home/sprite`, `sprite` |
-| `rg` preinstalled | Yes | No | No |
-| New-sandbox options | `image`, `app_name`, `create_app_if_missing` | `template`, `allow_internet_access` | `runtime`, `client` |
+| | `ModalSandbox` | `E2BSandbox` | `SpritesSandbox` | `SmolSandbox` |
+| --- | --- | --- | --- | --- |
+| Extra | `[modal]` | `[e2b]` | `[sprites]` | `[smol]` |
+| Credentials | `modal token new`, or `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` | `E2B_API_KEY` | `SPRITE_TOKEN` | None for local; `SMOL_CLOUD_TOKEN` for cloud |
+| Lifetime | `sandbox_timeout=86_400` (10 to 86,400), optional `idle_timeout`; then terminated | `sandbox_timeout=3_600` (Pro: up to 86,400); then **paused**, resumed on attach | Unlimited: sleeps when idle, persists until deleted | Local: until deleted; Cloud: `ttl_seconds=3600` then deleted |
+| Default cwd / user | `/root`, `root` | `/home/user`, `user` | `/home/sprite`, `sprite` | `/workspace`, image default user |
+| `rg` preinstalled | Yes | No | No | No |
+| New-sandbox options | `image`, `app_name`, `create_app_if_missing` | `template`, `allow_internet_access` | `runtime`, `client` | `target`, `image`, `network`, `memory_mb` |
 
 All take `working_dir` (absolute; created on a new sandbox, must exist on an attached one) and `env`
 (nothing from your machine is passed through). All are asyncio-only and reject `defer_loading=True`.
@@ -291,8 +302,9 @@ async def end_conversation(conv: Conversation) -> None:  # or on a TTL sweep
 
 - **Pydantic AI never terminates the sandbox**: it bills until `await <Sandbox>().destroy(ref)` or its
   lifetime ends. `destroy` acts by ID (any instance works; Sprites uses the instance's `client=`), does
-  not wake the sandbox, returns quietly if it is gone, and raises `ValueError` for another provider's
-  ref. `after_run` skips failed runs; one-shot jobs destroy `ctx.workspace.ref` in `run_error`.
+  not wake E2B/Modal/Sprites, and raises `ValueError` for another provider's ref. Smol's local
+  SDK may start a stopped VM while reconnecting to delete it; its `destroy` reports a missing VM.
+  `after_run` skips failed runs; one-shot jobs destroy `ctx.workspace.ref` in `run_error`.
 - `workspace=` wins over the ref in `message_history`, and UI adapters strip refs from client-sent
   history, so keep the ref server-side. Attaching to a gone sandbox raises `WorkspaceUnavailableError`
   (so do rejected credentials); no empty replacement is created unless you pass `workspace='new'`.
@@ -429,6 +441,7 @@ task's approval fails the run.
 - https://pydantic.dev/docs/ai/harness/shell/
 - https://pydantic.dev/docs/ai/harness/modal-sandbox/
 - https://pydantic.dev/docs/ai/harness/e2b-sandbox/
+- https://pydantic.dev/docs/ai/harness/smol-sandbox/
 - https://pydantic.dev/docs/ai/harness/sprites-sandbox/
 - https://pydantic.dev/docs/ai/harness/durable-execution/
 - https://pydantic.dev/docs/ai/harness/repo-context/
